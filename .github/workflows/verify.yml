@@ -53,6 +53,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22.23.1'
+      - name: Configure runner browser sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$CHROME_DEVEL_SANDBOX" && test ! -L "$CHROME_DEVEL_SANDBOX"
+          sudo chown root:root "$CHROME_DEVEL_SANDBOX"
+          sudo chmod 4755 "$CHROME_DEVEL_SANDBOX"
+          test -u "$CHROME_DEVEL_SANDBOX" && test -x "$CHROME_DEVEL_SANDBOX"
+          stat --format='%u %a %n' "$CHROME_DEVEL_SANDBOX"
       - name: Install locked HFVI browser
         run: |
           browser="$(bash scripts/ci/install_hfvi_browser.sh "$RUNNER_TEMP/leafer-browser")"
