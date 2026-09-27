@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+export PYTHONDONTWRITEBYTECODE=1
+
+WORKSPACE_ARGS=()
+export DASLEAFER_VERIFY_MODE=standalone
+if [[ "${1:-}" == "--standalone" ]]; then
+  shift
+elif [[ "${1:-}" == "--workspace" ]]; then
+  WORKSPACE_ARGS=(--workspace)
+  export DASLEAFER_VERIFY_MODE=workspace
+  shift
+fi
+if [[ $# -ne 0 ]]; then
+  echo "Usage: scripts/verify [--standalone|--workspace]" >&2
+  exit 2
+fi
+
+DEPENDENCY_LOCK="release/DEPENDENCY_LOCK.json"
+if [[ ! -f "$DEPENDENCY_LOCK" ]]; then
+  echo "missing required public dependency lock: $DEPENDENCY_LOCK" >&2
+  exit 1
+fi
+
+DASOPS_ROOT="${DASLEAFER_DASOPS_ROOT:-$ROOT/../dasops}"
+python3 scripts/ci/verify_dasops_release_lock.py \
+  --lock "$DEPENDENCY_LOCK" \
+  --dasops-root "$DASOPS_ROOT" \
+  --prepared-dependencies "${DAS_RELEASE_PINNED_DEPENDENCIES:-}" \
+  "${WORKSPACE_ARGS[@]}" \
+  --json
+
+# Import only the source whose identity was checked above, in both modes.
+export DASLEAFER_DASOPS_ROOT="$DASOPS_ROOT"
+export PYTHONPATH="$DASOPS_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+python3 -m dasleafer --help >/dev/null
+python3 -m dasleafer lock-status --help >/dev/null
+
+if [[ "${DASLEAFER_VERIFY_SKIP_TESTS:-0}" != "1" ]]; then
+  python3 scripts/ci/check_hfvi_toolchain.py
+  python3 -m pytest tests -q -p no:cacheprovider
+  npm audit --package-lock-only --ignore-scripts --prefix templates/das-leafer-product/frontend
+  bash ./scripts/verify-wheel-installability.sh
+fi
+
+python3 - <<'PY'
+from pathlib import Path
+import sys
+
+root = Path.cwd()
+template_root = root / "templates" / "das-leafer-product"
+legacy_baseline = "unified" + "-current-baseline"
+problems = []
+
+legacy_standard = template_root / "docs" / "standards" / "DAS_STANDARD.md"
+if legacy_standard.exists():
+    problems.append(f"copied standard doc remains: {legacy_standard.relative_to(root)}")
+
+agents_override = template_root / "AGENTS.override.md"
+if not agents_override.exists():
+    problems.append("template AGENTS.override.md missing")
+else:
+    text = agents_override.read_text(encoding="utf-8", errors="replace")
+    if "docs/standards/DAS_STANDARD.md" in text:
+        problems.append("template AGENTS.override.md still references docs/standards/DAS_STANDARD.md")
+    if "STANDARD_REF.md" not in text:
+        problems.append("template AGENTS.override.md must reference STANDARD_REF.md")
+
+vendor_readme = template_root / "vendor" / "README.md"
+if not vendor_readme.exists():
+    problems.append("template vendor/README.md missing")
+else:
+    text = vendor_readme.read_text(encoding="utf-8", errors="replace")
+    if "STANDARD_REF.md" not in text:
+        problems.append("template vendor/README.md must reference STANDARD_REF.md")
+
+for path in template_root.rglob("*"):
+    if not path.is_file():
+        continue
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        continue
+    if legacy_baseline in text:
+        problems.append(f"legacy baseline reference remains: {path.relative_to(root)}")
+
+run_worker = template_root / "scripts" / "run_worker_codex.sh"
+if run_worker.exists():
+    text = run_worker.read_text(encoding="utf-8", errors="replace")
+    if 'grep -q "^Owner:' in text:
+        problems.append(f"grep-based owner check remains: {run_worker.relative_to(root)}")
+
+if problems:
+    print("\n".join(problems), file=sys.stderr)
+    raise SystemExit(1)
+PY
+
+mapfile -t RESIDUE < <(find "$ROOT" \( -path '*/.git' -o -path '*/.venv' -o -path '*/.release-dependencies' \) -prune -o \( -type d -name '__pycache__' -o -type f \( -name '*.pyc' -o -name '.DS_Store' \) \) -print)
+if ((${#RESIDUE[@]})); then
+  printf 'forbidden generated residue found:\n' >&2
+  printf '%s\n' "${RESIDUE[@]}" >&2
+  exit 1
+fi

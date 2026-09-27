@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0.0",
+  "engine": "chrome-for-testing",
+  "productVersion": "147.0.7727.55",
+  "archive": {
+    "url": "https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.55/linux64/chrome-linux64.zip",
+    "contentLength": 179123229,
+    "md5": "65f3a8ba6c79c7e099937c887335a8e9"
+  },
+  "viewport": {
+    "width": 1024,
+    "height": 768,
+    "deviceScaleFactor": 1
+  },
+  "locale": "en-US",
+  "timezone": "UTC",
+  "pixelThreshold": {
+    "maxPixels": 0,
+    "maxChannelDelta": 0
+  }
+}

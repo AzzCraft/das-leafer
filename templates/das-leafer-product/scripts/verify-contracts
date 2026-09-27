@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+./scripts/verify
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path.cwd()
+schema = json.loads((root / "contracts/schemas/hfvi-event.schema.json").read_text(encoding="utf-8"))
+valid = json.loads((root / "contracts/fixtures/valid/hfvi-event.json").read_text(encoding="utf-8"))
+invalid = json.loads((root / "contracts/fixtures/invalid/hfvi-event-missing-coordinate.json").read_text(encoding="utf-8"))
+
+required = set(schema["required"])
+properties = schema["properties"]
+
+def conforms(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != required:
+        return False
+    if not all(isinstance(value[key], str) for key in ("eventId", "kind", "targetId")):
+        return False
+    if value["kind"] not in properties["kind"]["enum"]:
+        return False
+    return all(isinstance(value[key], int) and value[key] >= 0 for key in ("x", "y"))
+
+if not conforms(valid):
+    raise SystemExit("valid HFVI event fixture does not conform to starter contract")
+if conforms(invalid):
+    raise SystemExit("invalid HFVI event fixture unexpectedly conforms to starter contract")
+print("[OK] starter HFVI contract valid/invalid fixtures")
+PY

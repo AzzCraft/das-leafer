@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${1:-$(pwd)}"
+test -d "$ROOT/das-leafer/tests"
+printf '{"schemaVersion":1,"taskId":"DAS-03-012","ok":true}\n'

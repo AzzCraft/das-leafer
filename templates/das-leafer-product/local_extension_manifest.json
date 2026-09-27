@@ -1,0 +1,20 @@
+{
+  "$schema": "https://das-standard.dev/schemas/local_extension_manifest.schema.json",
+  "schemaVersion": "1.0.0",
+  "standardManifestVersion": "1.4.0",
+  "extensions": [
+    {
+      "name": "{{NAMESPACE}}.hfvi-policy",
+      "namespace": "{{NAMESPACE}}",
+      "kind": "other",
+      "extensionPoint": "other",
+      "owner": "project-architecture",
+      "scope": "project-local",
+      "compatibilityNote": "Tracks HFVI project-local policy declarations that are outside the core DAS standard.",
+      "reviewDate": "2026-12-31",
+      "values": [
+        "hfvi-policy"
+      ]
+    }
+  ]
+}

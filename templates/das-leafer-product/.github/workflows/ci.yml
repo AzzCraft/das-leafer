@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5.1.0
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.23.1'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Python deps
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Install pinned Chrome for Testing
+        env:
+          HFVI_BROWSER_URL: https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.55/linux64/chrome-linux64.zip
+          HFVI_BROWSER_BYTES: '179123229'
+          HFVI_BROWSER_MD5: 65f3a8ba6c79c7e099937c887335a8e9
+        run: |
+          mkdir -p .hfvi-toolchain
+          curl --fail --location --retry 3 --output .hfvi-toolchain/chrome.zip "$HFVI_BROWSER_URL"
+          test "$(wc -c < .hfvi-toolchain/chrome.zip)" = "$HFVI_BROWSER_BYTES"
+          echo "$HFVI_BROWSER_MD5  .hfvi-toolchain/chrome.zip" | md5sum --check --status -
+          unzip -q .hfvi-toolchain/chrome.zip -d .hfvi-toolchain
+          test -x .hfvi-toolchain/chrome-linux64/chrome
+          echo "HFVI_BROWSER_BINARY=$PWD/.hfvi-toolchain/chrome-linux64/chrome" >> "$GITHUB_ENV"
+      - name: Install locked frontend dependencies
+        run: |
+          npm ci --prefix frontend --ignore-scripts --no-audit --fund=false
+      - name: Run verify
+        run: |
+          ./scripts/verify

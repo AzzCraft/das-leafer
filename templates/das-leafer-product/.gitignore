@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+
+# Streamlit
+.streamlit/
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+
+# Worktrees / scratch
+.worktrees/
+output/
+
+# Browser HFVI replay output (actual screenshot, visual diff, and receipt).
+.cadence/out/
+
+# Codex
+.codex/log/
+.codex/session-*.jsonl
