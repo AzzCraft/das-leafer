@@ -15,6 +15,8 @@ permissions:
 
 env:
   PYTHONDONTWRITEBYTECODE: "1"
+  # Keep Chrome sandboxed under Ubuntu user-namespace restrictions.
+  CHROME_DEVEL_SANDBOX: /opt/google/chrome/chrome-sandbox
 
 jobs:
   validate:

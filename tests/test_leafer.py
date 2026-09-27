@@ -270,9 +270,13 @@ class LeaferTemplateTests(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(prohibited.returncode, 0, prohibited.stdout + prohibited.stderr)
+            self.assertIn("Unsafe Cadence vendoring is prohibited", prohibited.stderr)
             self.assertTrue(sentinel.exists(), prohibited.stdout + prohibited.stderr)
 
             developer_env = os.environ.copy()
+            # This phase models a local developer, independent of the test runner.
+            developer_env.pop("CI", None)
+            developer_env.pop("DAS_RELEASE_PROFILE", None)
             developer_env["DAS_LEAFER_ALLOW_UNSAFE_VENDOR"] = "1"
             installed = subprocess.run(
                 ["bash", "./scripts/install_cadence_vendor.sh", "--from-suite", str(release_root / "das-suite"), "--tier", "oss", "--force", "--unsafe-development-override"],
