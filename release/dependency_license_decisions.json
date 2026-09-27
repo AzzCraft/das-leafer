@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "1.0.0",
+  "allowedLicenses": [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "MIT",
+    "PSF-2.0",
+    "BSD-2-Clause",
+    "MPL-2.0",
+    "Apache-2.0 OR BSD-2-Clause"
+  ],
+  "dependencies": [
+    {
+      "license": "Apache-2.0",
+      "name": "bandit",
+      "notice": "Bandit is distributed under Apache-2.0.",
+      "version": "1.9.4"
+    },
+    {
+      "license": "MIT",
+      "name": "build",
+      "notice": "build is distributed under the MIT License.",
+      "version": "1.2.2"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "dasops",
+      "notice": "DASOps is a first-party Apache-2.0 dependency distributed as a separately identified public package.",
+      "version": "1.0.0"
+    },
+    {
+      "license": "MIT",
+      "name": "pip-audit",
+      "notice": "pip-audit is distributed under the MIT License.",
+      "version": "2.10.1"
+    },
+    {
+      "license": "MIT",
+      "name": "pytest",
+      "notice": "pytest is distributed under the MIT License.",
+      "version": "9.0.3"
+    },
+    {
+      "license": "MIT",
+      "name": "PyYAML",
+      "notice": "PyYAML is distributed under the MIT License.",
+      "version": "6.0.3"
+    },
+    {
+      "license": "MIT",
+      "name": "setuptools",
+      "notice": "setuptools is distributed under the MIT License.",
+      "version": "83.0.0"
+    },
+    {
+      "license": "MIT",
+      "name": "wheel",
+      "notice": "wheel is distributed under the MIT License.",
+      "version": "0.46.2"
+    },
+    {
+      "name": "pip",
+      "version": "26.2.1",
+      "license": "MIT",
+      "notice": "pip is distributed under the MIT License."
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "eventId": "pointer-down-001",
+  "kind": "pointer.down",
+  "targetId": "main-canvas",
+  "x": 40,
+  "y": 24
+}

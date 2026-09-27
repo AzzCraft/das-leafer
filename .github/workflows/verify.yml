@@ -1,0 +1,73 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  leafer-verify:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - name: Read the declared DASOps identity
+        id: dasops_pin
+        run: python3 scripts/ci/read_dasops_release_lock.py --github-output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          repository: "${{ steps.dasops_pin.outputs.repository }}"
+          ref: "${{ steps.dasops_pin.outputs.target_commit }}"
+          path: .release-dependencies/dasops
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind DASOps checkout to its declared annotated tag
+        shell: bash
+        env:
+          TAG: "${{ steps.dasops_pin.outputs.tag }}"
+          TAG_OBJECT: "${{ steps.dasops_pin.outputs.tag_object }}"
+          TARGET_COMMIT: "${{ steps.dasops_pin.outputs.target_commit }}"
+          TREE: "${{ steps.dasops_pin.outputs.tree }}"
+        run: |
+          set -euo pipefail
+          repo=.release-dependencies/dasops
+          git -C "$repo" fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          [[ "$(git -C "$repo" cat-file -t "refs/tags/$TAG")" == "tag" ]]
+          [[ "$(git -C "$repo" rev-parse "refs/tags/$TAG")" == "$TAG_OBJECT" ]]
+          [[ "$(git -C "$repo" rev-parse "$TAG^{commit}")" == "$TARGET_COMMIT" ]]
+          [[ "$(git -C "$repo" rev-parse "$TARGET_COMMIT^{tree}")" == "$TREE" ]]
+          [[ "$(git -C "$repo" rev-parse HEAD^{commit})" == "$TARGET_COMMIT" ]]
+          [[ "$(tr -d '\r\n' < "$repo/VERSION")" == "${TAG#v}" ]]
+          ln -s "$GITHUB_WORKSPACE/$repo" "$GITHUB_WORKSPACE/../dasops"
+      - uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5.1.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.23.1'
+      - name: Install locked HFVI browser
+        run: |
+          browser="$(bash scripts/ci/install_hfvi_browser.sh "$RUNNER_TEMP/leafer-browser")"
+          echo "HFVI_BROWSER_BINARY=$browser" >> "$GITHUB_ENV"
+      - name: Install pinned verification environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/leafer-verify-venv"
+          . "$RUNNER_TEMP/leafer-verify-venv/bin/activate"
+          python -m pip install --disable-pip-version-check pip==26.2.1
+          python -m pip install --disable-pip-version-check -r requirements-verify.txt
+      - name: Verify and audit source
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/leafer-verify-venv/bin/activate"
+          PYTHONPATH="$GITHUB_WORKSPACE/.release-dependencies/dasops:$GITHUB_WORKSPACE" bash ./scripts/verify
+          pip-audit --progress-spinner off --strict -r requirements-verify.txt
+          bandit -q -lll -r dasleafer

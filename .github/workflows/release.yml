@@ -1,0 +1,414 @@
+name: release-validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Exact annotated v* tag to validate; run this workflow itself from the default branch"
+        required: true
+        type: string
+
+# This workflow is an evidence gate, not a publisher. It has no permission to
+# create or move tags or create a GitHub Release.
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  validate:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: "${{ steps.release_identity.outputs.version }}"
+      tag: "${{ steps.release_identity.outputs.tag }}"
+      tag_object: "${{ steps.release_identity.outputs.tag_object }}"
+      commit: "${{ steps.release_identity.outputs.commit }}"
+    steps:
+      - name: Resolve immutable release tag
+        id: release_ref
+        shell: bash
+        env:
+          DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}"
+          REQUESTED_TAG: "${{ inputs.ref }}"
+          WORKFLOW_REF: "${{ github.workflow_ref }}"
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REF" == *"@refs/heads/$DEFAULT_BRANCH" ]] || {
+            echo "manual validation must run the workflow from the default branch" >&2
+            exit 1
+          }
+          tag="$REQUESTED_TAG"
+          semver='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?'
+          [[ "$tag" =~ ^v${semver}$ ]] || {
+            echo "release validation accepts only a SemVer v* tag" >&2
+            exit 1
+          }
+          printf 'tag=%s\nref=refs/tags/%s\n' "$tag" "$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: "${{ steps.release_ref.outputs.ref }}"
+      - name: Bind the checked-out annotated tag to VERSION
+        id: release_identity
+        shell: bash
+        env:
+          DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}"
+          TAG: "${{ steps.release_ref.outputs.tag }}"
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          [[ "$TAG" == "v$version" ]] || { echo "tag $TAG does not match VERSION $version" >&2; exit 1; }
+          tag_object="$(git rev-parse "refs/tags/$TAG")"
+          [[ "$(git cat-file -t "$tag_object")" == "tag" ]] || { echo "release tag must be annotated" >&2; exit 1; }
+          commit="$(git rev-parse "$TAG^{commit}")"
+          [[ "$(git rev-parse HEAD^{commit})" == "$commit" ]] || { echo "checkout does not match tag target" >&2; exit 1; }
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$commit" "refs/remotes/origin/$DEFAULT_BRANCH" || {
+            echo "release tag target is not reachable from the default branch" >&2
+            exit 1
+          }
+          printf 'version=%s\ntag=%s\ntag_object=%s\ncommit=%s\n' "$version" "$TAG" "$tag_object" "$commit" >> "$GITHUB_OUTPUT"
+      - name: Verify approved release-tag signer
+        shell: bash
+        env:
+          TAG: "${{ steps.release_identity.outputs.tag }}"
+          RELEASE_SIGNER_FINGERPRINT: "${{ vars.RELEASE_SIGNER_FINGERPRINT }}"
+          RELEASE_SIGNER_PUBLIC_KEY: "${{ vars.RELEASE_SIGNER_PUBLIC_KEY }}"
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SIGNER_FINGERPRINT" && test -n "$RELEASE_SIGNER_PUBLIC_KEY" || {
+            echo "protected release signer fingerprint/public key are not configured" >&2
+            exit 1
+          }
+          key="$RUNNER_TEMP/das-leafer-release-signer.asc"
+          printf '%s\n' "$RELEASE_SIGNER_PUBLIC_KEY" > "$key"
+          python3 scripts/release/verify_tag_signer.py --tag "$TAG" --fingerprint "$RELEASE_SIGNER_FINGERPRINT" --public-key "$key"
+      - name: Read the declared DASOps identity
+        id: dasops_pin
+        env:
+          DASOPS_APPROVAL_TOKEN: "${{ secrets.DASOPS_APPROVAL_TOKEN }}"
+          DASOPS_APPROVED_APPROVERS: "${{ vars.DASOPS_APPROVED_APPROVERS }}"
+          DASOPS_VALIDATION_WORKFLOW_ID: "${{ vars.DASOPS_VALIDATION_WORKFLOW_ID }}"
+          DASOPS_APPROVAL_ISSUE_URL: "${{ vars.DASOPS_APPROVAL_ISSUE_URL }}"
+        run: python3 scripts/ci/read_dasops_release_lock.py --require-publication-eligible --github-output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          repository: "${{ steps.dasops_pin.outputs.repository }}"
+          ref: "${{ steps.dasops_pin.outputs.target_commit }}"
+          path: .release-dependencies/dasops
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind declared DASOps release identity
+        shell: bash
+        env:
+          TAG: "${{ steps.dasops_pin.outputs.tag }}"
+          TAG_OBJECT: "${{ steps.dasops_pin.outputs.tag_object }}"
+          TARGET_COMMIT: "${{ steps.dasops_pin.outputs.target_commit }}"
+          TREE: "${{ steps.dasops_pin.outputs.tree }}"
+        run: |
+          set -euo pipefail
+          repo=.release-dependencies/dasops
+          git -C "$repo" fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          [[ "$(git -C "$repo" cat-file -t "refs/tags/$TAG")" == "tag" ]]
+          [[ "$(git -C "$repo" rev-parse "refs/tags/$TAG")" == "$TAG_OBJECT" ]]
+          [[ "$(git -C "$repo" rev-parse "$TAG^{commit}")" == "$TARGET_COMMIT" ]]
+          [[ "$(git -C "$repo" rev-parse "$TARGET_COMMIT^{tree}")" == "$TREE" ]]
+          ln -s "$GITHUB_WORKSPACE/$repo" "$GITHUB_WORKSPACE/../dasops"
+      - uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5.1.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.23.1'
+      - name: Install locked HFVI browser
+        run: |
+          browser="$(bash scripts/ci/install_hfvi_browser.sh "$RUNNER_TEMP/leafer-browser")"
+          echo "HFVI_BROWSER_BINARY=$browser" >> "$GITHUB_ENV"
+      - name: Install pinned verification environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/leafer-verify-venv"
+          . "$RUNNER_TEMP/leafer-verify-venv/bin/activate"
+          python -m pip install --disable-pip-version-check pip==26.2.1
+          python -m pip install --disable-pip-version-check --ignore-installed --report "$RUNNER_TEMP/leafer-resolved-dependencies.json" -r requirements-verify.txt
+      - name: Verify and audit public source
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/leafer-verify-venv/bin/activate"
+          PYTHONPATH="$GITHUB_WORKSPACE/.release-dependencies/dasops:$GITHUB_WORKSPACE" bash ./scripts/verify
+          pip-audit --progress-spinner off --strict -r requirements-verify.txt
+          bandit -q -lll -r dasleafer
+      - name: Build deterministic release evidence
+        id: release_artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.release_identity.outputs.version }}"
+          tag="${{ steps.release_identity.outputs.tag }}"
+          tag_object="${{ steps.release_identity.outputs.tag_object }}"
+          commit="${{ steps.release_identity.outputs.commit }}"
+          artifact_dir="$RUNNER_TEMP/das-leafer-release-artifacts"
+          archive_name="das-leafer-${version}-source.tar.gz"
+          sbom_name="das-leafer-${version}.spdx.json"
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "$commit")"
+          mkdir -p "$artifact_dir"
+          git archive --format=tar --prefix="das-leafer-${version}/" "$commit" | gzip -n > "$artifact_dir/$archive_name"
+          python3 - "$artifact_dir/$sbom_name" "das-leafer" "$version" "$commit" <<'PY'
+          import hashlib, json, subprocess, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          output, repository, version, commit = sys.argv[1:]
+          def git_bytes(*args): return subprocess.check_output(["git", *args])
+          timestamp = int(git_bytes("show", "-s", "--format=%ct", commit).decode().strip())
+          entries = git_bytes("ls-tree", "-r", "-z", "--full-tree", commit).split(b"\0")
+          files, sha1s, relationships = [], [], []
+          for index, entry in enumerate(item for item in entries if item):
+              metadata, raw_path = entry.split(b"\t", 1)
+              mode, object_type, object_id = metadata.decode().split()
+              if object_type != "blob": continue
+              data = git_bytes("cat-file", "blob", object_id)
+              sha1, sha256 = hashlib.sha1(data).hexdigest(), hashlib.sha256(data).hexdigest()
+              sha1s.append(sha1); file_id = f"SPDXRef-File-{index:06d}"
+              files.append({"SPDXID": file_id, "checksums": [{"algorithm":"SHA1","checksumValue":sha1},{"algorithm":"SHA256","checksumValue":sha256}], "copyrightText":"NOASSERTION", "fileName":"./" + raw_path.decode("utf-8", "surrogateescape"), "licenseConcluded":"NOASSERTION", "licenseInfoInFiles":["NOASSERTION"], "noticeText":f"git mode {mode}"})
+              relationships.append({"spdxElementId":"SPDXRef-Package-Source","relationshipType":"CONTAINS","relatedSpdxElement":file_id})
+          payload = {"SPDXID":"SPDXRef-DOCUMENT", "creationInfo":{"created":datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00","Z"),"creators":["Tool: DAS Leafer deterministic source SBOM generator"]}, "dataLicense":"CC0-1.0", "documentNamespace":f"https://github.com/AzzCraft/{repository}/sbom/{version}/{commit}", "files":files, "name":f"{repository}-{version}-source-inventory", "packages":[{"SPDXID":"SPDXRef-Package-Source","copyrightText":"NOASSERTION","downloadLocation":"NOASSERTION","filesAnalyzed":True,"licenseConcluded":"NOASSERTION","licenseDeclared":"NOASSERTION","name":repository,"packageVerificationCode":{"packageVerificationCodeValue":hashlib.sha1("".join(sorted(sha1s)).encode()).hexdigest()},"supplier":"NOASSERTION","versionInfo":version}], "relationships":[{"spdxElementId":"SPDXRef-DOCUMENT","relationshipType":"DESCRIBES","relatedSpdxElement":"SPDXRef-Package-Source"}, *relationships], "spdxVersion":"SPDX-2.3"}
+          Path(output).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          python3 - "$artifact_dir/release-manifest.json" "$version" "$tag" "$tag_object" "$commit" "$archive_name" "$sbom_name" <<'PY'
+          import json, sys
+          from pathlib import Path
+          path, version, tag, tag_object, commit, archive, sbom = sys.argv[1:]
+          Path(path).write_text(json.dumps({"commit":commit,"repository":"das-leafer","sbom":sbom,"sbomKind":"SPDX-2.3 deterministic source inventory from the exact commit","sourceArchive":archive,"tag":tag,"tagObject":tag_object,"version":version}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          tar -tzf "$artifact_dir/$archive_name" >/dev/null
+          mkdir -p "$artifact_dir/extracted"
+          tar -xzf "$artifact_dir/$archive_name" -C "$artifact_dir/extracted"
+          test -f "$artifact_dir/extracted/das-leafer-${version}/VERSION"
+          (
+            cd "$artifact_dir"
+            while IFS= read -r artifact; do sha256sum "$artifact"; done < <(printf '%s\n' "$archive_name" "$sbom_name" release-manifest.json | LC_ALL=C sort) > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          printf 'path=%s\nversion=%s\ntag=%s\ntag_object=%s\ncommit=%s\n' "$artifact_dir" "$version" "$tag" "$tag_object" "$commit" >> "$GITHUB_OUTPUT"
+      - name: Build reproducible Python release artifact set
+        id: python_release_artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/leafer-verify-venv/bin/activate"
+          artifact_dir="$RUNNER_TEMP/das-leafer-python-release-artifacts"
+          python3 scripts/release/build_release_artifacts.py \
+            --out "$artifact_dir" \
+            --version "${{ steps.release_identity.outputs.version }}" \
+            --tag "${{ steps.release_identity.outputs.tag }}" \
+            --tag-object "${{ steps.release_identity.outputs.tag_object }}" \
+            --commit "${{ steps.release_identity.outputs.commit }}" \
+            --resolved-dependencies "$RUNNER_TEMP/leafer-resolved-dependencies.json"
+          (cd "$artifact_dir" && sha256sum --check SHA256SUMS)
+          printf 'path=%s\nversion=%s\ncommit=%s\n' "$artifact_dir" "${{ steps.release_identity.outputs.version }}" "${{ steps.release_identity.outputs.commit }}" >> "$GITHUB_OUTPUT"
+      - name: Preserve validation runner dependency report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: "das-leafer-dependency-report-validation-${{ steps.release_identity.outputs.version }}-${{ steps.release_identity.outputs.commit }}"
+          path: "${{ runner.temp }}/leafer-resolved-dependencies.json"
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: "das-leafer-release-validation-${{ steps.python_release_artifacts.outputs.version }}-${{ steps.python_release_artifacts.outputs.commit }}"
+          path: "${{ steps.python_release_artifacts.outputs.path }}"
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  attest:
+    name: attest trusted source archive
+    needs: validate
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve trusted workflow and immutable release tag
+        id: release_ref
+        shell: bash
+        env:
+          DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}"
+          REQUESTED_TAG: "${{ inputs.ref }}"
+          WORKFLOW_REF: "${{ github.workflow_ref }}"
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REF" == *"@refs/heads/$DEFAULT_BRANCH" ]] || {
+            echo "manual validation must run the workflow from the default branch" >&2
+            exit 1
+          }
+          [[ "$REQUESTED_TAG" == "${{ needs.validate.outputs.tag }}" ]] || {
+            echo "validated tag output does not match requested tag" >&2
+            exit 1
+          }
+          printf 'tag=%s\nref=refs/tags/%s\n' "$REQUESTED_TAG" "$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: "${{ steps.release_ref.outputs.ref }}"
+      - name: Check out trusted default-branch release control
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+          ref: "${{ github.event.repository.default_branch }}"
+          path: .trusted-control
+      - name: Independently bind trusted tag and dependency publication state
+        shell: bash
+        env:
+          DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}"
+          TAG: "${{ steps.release_ref.outputs.tag }}"
+          DASOPS_APPROVAL_TOKEN: "${{ secrets.DASOPS_APPROVAL_TOKEN }}"
+          DASOPS_APPROVED_APPROVERS: "${{ vars.DASOPS_APPROVED_APPROVERS }}"
+          DASOPS_VALIDATION_WORKFLOW_ID: "${{ vars.DASOPS_VALIDATION_WORKFLOW_ID }}"
+          DASOPS_APPROVAL_ISSUE_URL: "${{ vars.DASOPS_APPROVAL_ISSUE_URL }}"
+          EXPECTED_VERSION: "${{ needs.validate.outputs.version }}"
+          EXPECTED_TAG_OBJECT: "${{ needs.validate.outputs.tag_object }}"
+          EXPECTED_COMMIT: "${{ needs.validate.outputs.commit }}"
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          tag_object="$(git rev-parse "refs/tags/$TAG")"
+          commit="$(git rev-parse "$TAG^{commit}")"
+          [[ "$TAG" == "v$version" ]]
+          [[ "$(git cat-file -t "$tag_object")" == "tag" ]]
+          [[ "$(git rev-parse HEAD^{commit})" == "$commit" ]]
+          [[ "$version" == "$EXPECTED_VERSION" && "$tag_object" == "$EXPECTED_TAG_OBJECT" && "$commit" == "$EXPECTED_COMMIT" ]]
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$commit" "refs/remotes/origin/$DEFAULT_BRANCH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          trusted_path = Path(".trusted-control/release/DEPENDENCY_LOCK.json")
+          tag_path = Path("release/DEPENDENCY_LOCK.json")
+          assert trusted_path.read_bytes() == tag_path.read_bytes(), "tag dependency lock differs from protected default-branch control"
+          lock = json.loads(trusted_path.read_text(encoding="utf-8"))
+          pin = lock["dependencies"]["dasops"]
+          identity = pin["releaseIdentity"]
+          assert pin["component"] == "dasops" and pin["version"] == "1.0.0"
+          assert all(isinstance(identity[key], str) and len(identity[key]) == 40 for key in ("tagObject", "targetCommit", "tree"))
+          assert lock["publication"]["status"] == "eligible", "DASOps dependency is not publication-eligible"
+          PY
+          python3 .trusted-control/scripts/ci/read_dasops_release_lock.py --require-publication-eligible
+      - name: Download unprivileged validation evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: "das-leafer-release-validation-${{ needs.validate.outputs.version }}-${{ needs.validate.outputs.commit }}"
+          path: "${{ runner.temp }}/release-artifacts"
+      - name: Rebuild and bind the source archive without executing tag code
+        id: trusted_artifact
+        shell: bash
+        env:
+          VERSION: "${{ needs.validate.outputs.version }}"
+          COMMIT: "${{ needs.validate.outputs.commit }}"
+          TAG_OBJECT: "${{ needs.validate.outputs.tag_object }}"
+          ARTIFACT_DIR: "${{ runner.temp }}/release-artifacts"
+        run: |
+          set -euo pipefail
+          archive_name="das-leafer-${VERSION}-source.tar.gz"
+          archive="$ARTIFACT_DIR/$archive_name"
+          [[ -f "$archive" && -f "$ARTIFACT_DIR/SHA256SUMS" && -f "$ARTIFACT_DIR/release-manifest.json" ]]
+          git archive --format=tar --prefix="das-leafer-${VERSION}/" "$COMMIT" > "$RUNNER_TEMP/rebuilt-source.tar"
+          python3 - "$RUNNER_TEMP/rebuilt-source.tar" "$RUNNER_TEMP/rebuilt-source.tar.gz" <<'PY'
+          import gzip, sys
+          from pathlib import Path
+          with Path(sys.argv[2]).open("wb") as output:
+              with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0, compresslevel=9) as compressed:
+                  compressed.write(Path(sys.argv[1]).read_bytes())
+          PY
+          [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$(sha256sum "$RUNNER_TEMP/rebuilt-source.tar.gz" | awk '{print $1}')" ]]
+          (cd "$ARTIFACT_DIR" && sha256sum --check SHA256SUMS)
+          mkdir -p "$RUNNER_TEMP/extracted-source"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/extracted-source"
+          test -f "$RUNNER_TEMP/extracted-source/das-leafer-${VERSION}/VERSION"
+          python3 - "$ARTIFACT_DIR/release-manifest.json" "$VERSION" "$COMMIT" "$TAG_OBJECT" <<'PY'
+          import hashlib, json, pathlib, sys
+          manifest, version, commit, tag_object = sys.argv[1:]
+          data = json.load(open(manifest, encoding="utf-8"))
+          assert data["repository"] == "das-leafer"
+          assert data["version"] == version and data["tag"] == f"v{version}"
+          assert data["commit"] == commit and data["tagObject"] == tag_object
+          artifacts = data.get("artifacts")
+          assert isinstance(artifacts, list) and artifacts
+          names = {entry["name"] for entry in artifacts}
+          required = {f"das-leafer-{version}-source.tar.gz", f"dasleafer-{version}.tar.gz", "THIRD_PARTY_NOTICES.md", "provenance.intoto.jsonl"}
+          assert required <= names
+          for entry in artifacts:
+              path = pathlib.Path(manifest).parent / entry["name"]
+              assert path.is_file()
+              assert entry["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+          PY
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5.1.0
+        with:
+          python-version: "3.11"
+      - name: Recheck approved tag signer from trusted control
+        shell: bash
+        env:
+          TAG: "${{ steps.release_ref.outputs.tag }}"
+          RELEASE_SIGNER_FINGERPRINT: "${{ vars.RELEASE_SIGNER_FINGERPRINT }}"
+          RELEASE_SIGNER_PUBLIC_KEY: "${{ vars.RELEASE_SIGNER_PUBLIC_KEY }}"
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SIGNER_FINGERPRINT" && test -n "$RELEASE_SIGNER_PUBLIC_KEY" || exit 1
+          key="$RUNNER_TEMP/das-leafer-release-signer.asc"
+          printf '%s\n' "$RELEASE_SIGNER_PUBLIC_KEY" > "$key"
+          python3 .trusted-control/scripts/release/verify_tag_signer.py --tag "$TAG" --fingerprint "$RELEASE_SIGNER_FINGERPRINT" --public-key "$key"
+      - name: Independently rebuild all release assets
+        id: trusted_release_build
+        shell: bash
+        env:
+          VERSION: "${{ needs.validate.outputs.version }}"
+          TAG: "${{ needs.validate.outputs.tag }}"
+          COMMIT: "${{ needs.validate.outputs.commit }}"
+          TAG_OBJECT: "${{ needs.validate.outputs.tag_object }}"
+          ARTIFACT_DIR: "${{ runner.temp }}/release-artifacts"
+        run: |
+          set -euo pipefail
+          for path in pyproject.toml requirements-verify.txt release/dependency_license_decisions.json scripts/release/build_release_artifacts.py scripts/release/verify_tag_signer.py; do
+            cmp ".trusted-control/$path" "$path"
+          done
+          python3 -m venv "$RUNNER_TEMP/trusted-release-venv"
+          "$RUNNER_TEMP/trusted-release-venv/bin/python" -m pip install --disable-pip-version-check pip==26.2.1
+          "$RUNNER_TEMP/trusted-release-venv/bin/python" -m pip install --disable-pip-version-check --ignore-installed --report "$RUNNER_TEMP/trusted-resolved-dependencies.json" -r .trusted-control/requirements-verify.txt
+          rebuilt="$RUNNER_TEMP/trusted-release-artifacts"
+          "$RUNNER_TEMP/trusted-release-venv/bin/python" .trusted-control/scripts/release/build_release_artifacts.py \
+            --source "$GITHUB_WORKSPACE" --out "$rebuilt" --version "$VERSION" --tag "$TAG" --tag-object "$TAG_OBJECT" --commit "$COMMIT" --resolved-dependencies "$RUNNER_TEMP/trusted-resolved-dependencies.json"
+      - name: Bind independently rebuilt release assets
+        id: trusted_release_artifacts
+        shell: bash
+        env:
+          ARTIFACT_DIR: "${{ runner.temp }}/release-artifacts"
+          REBUILT_ARTIFACT_DIR: "${{ runner.temp }}/trusted-release-artifacts"
+        run: |
+          set -euo pipefail
+          cmp "$ARTIFACT_DIR/SHA256SUMS" "$REBUILT_ARTIFACT_DIR/SHA256SUMS"
+          cmp "$ARTIFACT_DIR/release-manifest.json" "$REBUILT_ARTIFACT_DIR/release-manifest.json"
+          (cd "$ARTIFACT_DIR" && sha256sum --check SHA256SUMS)
+          printf 'manifest=%s\n' "$ARTIFACT_DIR/release-manifest.json" >> "$GITHUB_OUTPUT"
+      - name: Preserve trusted runner dependency report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: "das-leafer-dependency-report-trusted-${{ needs.validate.outputs.version }}-${{ needs.validate.outputs.commit }}"
+          path: "${{ runner.temp }}/trusted-resolved-dependencies.json"
+          if-no-files-found: error
+          retention-days: 90
+      - name: Attest trusted release manifest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: "${{ steps.trusted_release_artifacts.outputs.manifest }}"

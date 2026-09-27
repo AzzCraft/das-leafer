@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0.0",
+  "tapeId": "baseline",
+  "initial": {
+    "x": 0,
+    "y": 0,
+    "zoom": 100,
+    "selected": "none"
+  },
+  "events": [
+    {"type": "pan", "dx": 2, "dy": -1},
+    {"type": "zoom", "delta": 25},
+    {"type": "select", "target": "river"}
+  ]
+}

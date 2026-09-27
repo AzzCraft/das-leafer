@@ -1,0 +1,498 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export REPO_ROOT
+
+python3 - "$@" <<'PY'
+from __future__ import annotations
+
+import json
+import hashlib
+import os
+import re
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+
+REPO_ROOT = Path(os.environ["REPO_ROOT"]).resolve()
+REQUIRED_FILES = [
+    REPO_ROOT / "docs" / "master_doc.md",
+    REPO_ROOT / "docs" / "ui_spec.md",
+    REPO_ROOT / "docs" / "appendices" / "APPENDIX_K_VIS.md",
+    REPO_ROOT / "docs" / "guides" / "HFVI_LEAFER_MAP.md",
+    REPO_ROOT / "docs" / "USER_MANUAL.md",
+    REPO_ROOT / "docs" / "policies" / "AGENT_OPERATING_MODEL.md",
+    REPO_ROOT / "AGENTS.override.md",
+    REPO_ROOT / "CLAUDE.md",
+    REPO_ROOT / "STANDARD_REF.md",
+    REPO_ROOT / "tooling_lock.json",
+    REPO_ROOT / "project_identity.json",
+    REPO_ROOT / "local_extension_manifest.json",
+    REPO_ROOT / "frontend" / "package-lock.json",
+    REPO_ROOT / "progress.txt",
+    REPO_ROOT / "openspec" / "config.yaml",
+    REPO_ROOT / "openspec" / "schemas" / "das-standard" / "schema.yaml",
+    REPO_ROOT / "prompts" / "orchestrator.md",
+    REPO_ROOT / "prompts" / "worker.md",
+    REPO_ROOT / "scripts" / "run_worker_codex.sh",
+    REPO_ROOT / "scripts" / "install_cadence_vendor.sh",
+    REPO_ROOT / "scripts" / "verify-hfvi",
+    REPO_ROOT / "hfvi" / "tapes" / "README.md",
+    REPO_ROOT / "hfvi" / "golden" / "README.md",
+    REPO_ROOT / "cadencew",
+    REPO_ROOT / "cadence.yaml",
+    REPO_ROOT / "vendor" / "README.md",
+    REPO_ROOT / "contracts" / "schemas" / "hfvi-event.schema.json",
+    REPO_ROOT / "contracts" / "fixtures" / "valid" / "hfvi-event.json",
+    REPO_ROOT / "contracts" / "fixtures" / "invalid" / "hfvi-event-missing-coordinate.json",
+]
+
+LOCK_KEYS = {
+    "version",
+    "taskId",
+    "owner",
+    "status",
+    "claimedAt",
+    "updatedAt",
+    "heartbeatAt",
+    "leaseSeconds",
+    "lockToken",
+}
+LEGACY_BASELINE = "unified" + "-current-baseline"
+HFVI_PROFILE = "hfvi_canvas_webgl_game"
+TASK_INDEX_HEADER = "| Task ID | Title | Owner | Status | Depends on | Verify gate |"
+TASK_ALLOWED_STATUSES = {"TODO", "IN_PROGRESS", "DONE", "BLOCKED", "PROPOSED"}
+
+TOOLING_LOCK_REQUIRED_KEYS = {"schemaVersion", "standardManifestVersion", "sourceOfTruth", "verifyRuntime", "cadenceVendor", "projectIdentity"}
+TOOLING_LOCK_REF_KEYS = {"kind", "uri", "pinType", "pinValue"}
+EXTENSION_MANIFEST_REQUIRED_KEYS = {"schemaVersion", "standardManifestVersion", "extensions"}
+PROJECT_ID_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+NAMESPACE_RE = re.compile(r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+\Z")
+SEMVER_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z")
+LICENSE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]{1,80}\Z")
+
+
+def fail(message: str) -> int:
+    print(f"[FAIL] {message}")
+    return 1
+
+
+def ok(message: str) -> None:
+    print(f"[OK] {message}")
+
+
+def check_exists() -> int:
+    rc = 0
+    for path in REQUIRED_FILES:
+        if not path.exists():
+            rc = 1
+            print(f"[MISSING] {path.relative_to(REPO_ROOT)}")
+        else:
+            ok(f"exists: {path.relative_to(REPO_ROOT)}")
+    return rc
+
+
+def check_seed_contract() -> int:
+    legacy = REPO_ROOT / "docs" / "standards" / "DAS_STANDARD.md"
+    if legacy.exists():
+        return fail("Found copied standard doc. Use STANDARD_REF.md instead.")
+
+    agents_text = (REPO_ROOT / "AGENTS.override.md").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    if "docs/standards/DAS_STANDARD.md" in agents_text:
+        return fail("AGENTS.override.md still references docs/standards/DAS_STANDARD.md")
+    if "STANDARD_REF.md" not in agents_text:
+        return fail("AGENTS.override.md must reference STANDARD_REF.md")
+
+    vendor_readme = REPO_ROOT / "vendor" / "README.md"
+    vendor_text = vendor_readme.read_text(encoding="utf-8", errors="replace")
+    if "STANDARD_REF.md" not in vendor_text:
+        return fail("vendor/README.md must reference STANDARD_REF.md")
+
+    cadence_yaml = (REPO_ROOT / "cadence.yaml").read_text(encoding="utf-8", errors="replace")
+    if LEGACY_BASELINE in cadence_yaml:
+        return fail(f"cadence.yaml still references {LEGACY_BASELINE}")
+    if "core-v140-baseline" not in cadence_yaml:
+        return fail("cadence.yaml must pin core-v140-baseline")
+
+    config_text = (REPO_ROOT / "openspec" / "config.yaml").read_text(encoding="utf-8", errors="replace")
+    if "STANDARD_REF.md" not in config_text:
+        return fail("openspec/config.yaml must reference STANDARD_REF.md")
+
+    ok("seed contract uses STANDARD_REF.md and v1.4.x artifacts")
+    return 0
+
+
+def check_master_doc_minimum() -> int:
+    text = (REPO_ROOT / "docs" / "master_doc.md").read_text(encoding="utf-8", errors="replace")
+    must_have_any = [
+        ["Conformance profile"],
+        ["Repo topology", "Topology"],
+        ["Contracts"],
+        ["Traceability"],
+        ["Verification"],
+        ["Execution plan"],
+    ]
+    missing = [alts[0] for alts in must_have_any if not any(candidate in text for candidate in alts)]
+    if missing:
+        return fail(f"docs/master_doc.md missing sections: {missing}")
+    if HFVI_PROFILE not in text:
+        return fail(f"docs/master_doc.md must declare {HFVI_PROFILE}")
+    # Reject unresolved residue in master_doc
+    for unresolved in ("TBD", "TODO", "PLACEHOLDER", "FIXME"):
+        if unresolved in text:
+            return fail(f"docs/master_doc.md contains unresolved residue: {unresolved!r}")
+    ok("master_doc.md contains minimum headings and HFVI profile")
+    return 0
+
+
+def check_deterministic_layout() -> int:
+    stray_tasks = []
+    for path in REPO_ROOT.rglob("tasks.md"):
+        rel = path.relative_to(REPO_ROOT)
+        if rel.parts[:2] == ("openspec", "schemas"):
+            continue
+        if rel.parts[:2] == ("openspec", "changes") and len(rel.parts) == 4 and rel.parts[3] == "tasks.md":
+            continue
+        stray_tasks.append(str(rel))
+    if stray_tasks:
+        return fail(
+            "Found stray tasks.md files outside openspec/changes/<change-id>/tasks.md: "
+            + ", ".join(stray_tasks)
+        )
+
+    legacy = [path for path in [REPO_ROOT / "docs" / "deltas", REPO_ROOT / "docs" / "delta"] if path.exists()]
+    if legacy:
+        return fail(
+            "Legacy delta folders detected (use openspec/changes instead): "
+            + ", ".join(str(path.relative_to(REPO_ROOT)) for path in legacy)
+        )
+
+    changes_dir = REPO_ROOT / "openspec" / "changes"
+    if changes_dir.exists():
+        for change_dir in sorted(path for path in changes_dir.iterdir() if path.is_dir()):
+            tasks_md = change_dir / "tasks.md"
+            if tasks_md.exists() and not (change_dir / "task_locks").exists():
+                return fail(f"Missing task lock directory: {(change_dir / 'task_locks').relative_to(REPO_ROOT)}")
+
+    ok("deterministic layout checks")
+    return 0
+
+
+def check_task_lock_schema() -> int:
+    changes_dir = REPO_ROOT / "openspec" / "changes"
+    if not changes_dir.exists():
+        return 0
+    for lock_path in sorted(changes_dir.rglob("*.lock")):
+        data = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return fail(f"Lock is not a YAML object: {lock_path.relative_to(REPO_ROOT)}")
+        missing = sorted(LOCK_KEYS - set(data))
+        if missing:
+            return fail(f"Lock missing required keys {missing}: {lock_path.relative_to(REPO_ROOT)}")
+    ok("structured task lock checks")
+    return 0
+
+
+def check_tasks_index_contract() -> int:
+    changes_dir = REPO_ROOT / "openspec" / "changes"
+    if not changes_dir.exists():
+        return 0
+    for tasks_md in sorted(changes_dir.glob("*/tasks.md")):
+        lines = tasks_md.read_text(encoding="utf-8", errors="replace").splitlines()
+        if TASK_INDEX_HEADER not in lines:
+            return fail(
+                f"tasks.md missing canonical index header in {tasks_md.relative_to(REPO_ROOT)}"
+            )
+        header_idx = lines.index(TASK_INDEX_HEADER)
+        for raw in lines[header_idx + 2 :]:
+            stripped = raw.strip()
+            if not stripped.startswith("|"):
+                break
+            if re.match(r"^\|\s*-{3,}", stripped):
+                continue
+            parts = [part.strip() for part in stripped.strip("|").split("|")]
+            while len(parts) < 6:
+                parts.append("")
+            task_id, _title, _owner, status, _depends_on, verify_gate = parts[:6]
+            if not task_id:
+                continue
+            if status not in TASK_ALLOWED_STATUSES:
+                return fail(
+                    f"tasks.md row {task_id} has invalid status {status!r} in {tasks_md.relative_to(REPO_ROOT)}"
+                )
+            if "verify" not in verify_gate:
+                return fail(
+                    f"tasks.md row {task_id} missing verify gate command in {tasks_md.relative_to(REPO_ROOT)}"
+                )
+    ok("tasks.md column/status contract checks")
+    return 0
+
+
+def check_stale_lock_semantics() -> int:
+    changes_dir = REPO_ROOT / "openspec" / "changes"
+    if not changes_dir.exists():
+        return 0
+    now = datetime.now(timezone.utc)
+    for lock_path in sorted(changes_dir.rglob("*.lock")):
+        data = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return fail(f"Lock is not a YAML object: {lock_path.relative_to(REPO_ROOT)}")
+
+        lease_seconds = int(data.get("leaseSeconds", 0))
+        if lease_seconds <= 0:
+            return fail(f"Lock leaseSeconds must be > 0: {lock_path.relative_to(REPO_ROOT)}")
+
+        status = str(data.get("status", "")).strip()
+        if status not in TASK_ALLOWED_STATUSES:
+            return fail(f"Lock has invalid status {status!r}: {lock_path.relative_to(REPO_ROOT)}")
+
+        try:
+            claimed = datetime.fromisoformat(str(data.get("claimedAt", "")))
+            updated = datetime.fromisoformat(str(data.get("updatedAt", "")))
+            heartbeat = datetime.fromisoformat(str(data.get("heartbeatAt", "")))
+        except ValueError:
+            return fail(f"Lock has invalid timestamp fields: {lock_path.relative_to(REPO_ROOT)}")
+
+        if claimed.tzinfo is None:
+            claimed = claimed.replace(tzinfo=timezone.utc)
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+
+        if updated < claimed:
+            return fail(f"Lock updatedAt precedes claimedAt: {lock_path.relative_to(REPO_ROOT)}")
+        if heartbeat < claimed:
+            return fail(f"Lock heartbeatAt precedes claimedAt: {lock_path.relative_to(REPO_ROOT)}")
+
+        if status == "IN_PROGRESS" and (now - heartbeat).total_seconds() > lease_seconds:
+            return fail(f"Stale IN_PROGRESS lock detected: {lock_path.relative_to(REPO_ROOT)}")
+
+    ok("stale/reclaim lock lifecycle semantics")
+    return 0
+
+
+def check_tooling_lock_schema() -> int:
+    path = REPO_ROOT / "tooling_lock.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        return fail(f"tooling_lock.json is not valid JSON: {exc}")
+    if not isinstance(data, dict):
+        return fail("tooling_lock.json root must be an object")
+    missing = sorted(TOOLING_LOCK_REQUIRED_KEYS - set(data))
+    if missing:
+        return fail(f"tooling_lock.json missing required keys: {missing}")
+    for ref_key in ("sourceOfTruth", "verifyRuntime"):
+        ref = data.get(ref_key)
+        if not isinstance(ref, dict):
+            return fail(f"tooling_lock.json {ref_key} must be an object")
+        if (
+            ref_key == "sourceOfTruth"
+            and str(ref.get("pinState", "")).lower() == "pending"
+            and not ref.get("pinValue")
+        ):
+            return fail("tooling_lock.json sourceOfTruth.pinState is pending; sourceOfTruth.pinValue must be a real git commit before verify can pass")
+        ref_missing = sorted(TOOLING_LOCK_REF_KEYS - set(ref))
+        if ref_missing:
+            return fail(f"tooling_lock.json {ref_key} missing keys: {ref_missing}")
+    # Reject unresolved pinValue in sourceOfTruth
+    sot = data.get("sourceOfTruth", {})
+    pin_type = str(sot.get("pinType", "")).strip()
+    pin = str(sot.get("pinValue", "")).strip()
+    if sot.get("kind") == "git" and pin_type not in {"commit", "tag"}:
+        return fail(f"tooling_lock.json sourceOfTruth.pinType must be commit or tag: {pin_type!r}")
+    unresolved_pins = ("replace-with-product-commit", "fake-sha256", "TBD", "TODO", "PLACEHOLDER", "")
+    if pin.lower() in (p.lower() for p in unresolved_pins):
+        return fail(f"tooling_lock.json sourceOfTruth.pinValue is unresolved: {pin!r}")
+    if pin_type == "commit" and not re.fullmatch(r"[0-9a-f]{7,40}", pin):
+        return fail(f"tooling_lock.json sourceOfTruth.pinValue must be a git commit hash: {pin!r}")
+    project_identity_ref = data.get("projectIdentity")
+    if not isinstance(project_identity_ref, dict):
+        return fail("tooling_lock.json projectIdentity must be an object")
+    if project_identity_ref.get("kind") != "file" or project_identity_ref.get("uri") != "./project_identity.json":
+        return fail("tooling_lock.json projectIdentity must point to ./project_identity.json")
+    if project_identity_ref.get("pinType") != "sha256" or not re.fullmatch(r"[0-9a-f]{64}", str(project_identity_ref.get("pinValue", ""))):
+        return fail("tooling_lock.json projectIdentity must have a SHA-256 pin")
+    if project_identity_ref.get("floating") is not False:
+        return fail("tooling_lock.json projectIdentity must not float")
+    cadence_vendor = data.get("cadenceVendor")
+    if not isinstance(cadence_vendor, dict):
+        return fail("tooling_lock.json cadenceVendor must be an object")
+    if cadence_vendor.get("schemaVersion") != "1.0.0":
+        return fail("tooling_lock.json cadenceVendor.schemaVersion must be 1.0.0")
+    repositories = cadence_vendor.get("repositories")
+    if not isinstance(repositories, dict) or not repositories:
+        return fail("tooling_lock.json cadenceVendor.repositories must be a non-empty object")
+    trusted_signers = cadence_vendor.get("trustedIdentitySigners")
+    if not isinstance(trusted_signers, dict) or any(
+        not isinstance(key_id, str) or not key_id or not isinstance(key, str) or not key.strip()
+        for key_id, key in trusted_signers.items()
+    ):
+        return fail("tooling_lock.json cadenceVendor.trustedIdentitySigners must map non-empty key IDs to public keys")
+    for repository, identity in sorted(repositories.items()):
+        if repository not in {"cadence-oss", "cadence-pro", "cadence-enterprise"}:
+            return fail(f"tooling_lock.json has unsupported Cadence vendor component: {repository!r}")
+        if not isinstance(identity, dict):
+            return fail(f"tooling_lock.json cadence vendor {repository} must be an object")
+        for field in ("remote", "tag", "tagObject", "targetCommit", "tree", "publication"):
+            if field not in identity:
+                return fail(f"tooling_lock.json cadence vendor {repository} missing {field}")
+        if not isinstance(identity["remote"], str) or not identity["remote"].startswith("https://"):
+            return fail(f"tooling_lock.json cadence vendor {repository} remote must be an HTTPS URL")
+        if not isinstance(identity["tag"], str) or not identity["tag"].startswith("v"):
+            return fail(f"tooling_lock.json cadence vendor {repository} tag must be a version tag")
+        for field in ("tagObject", "targetCommit", "tree"):
+            if not isinstance(identity[field], str) or not re.fullmatch(r"[0-9a-f]{40}", identity[field]):
+                return fail(f"tooling_lock.json cadence vendor {repository} {field} must be a full object ID")
+        publication = identity["publication"]
+        if not isinstance(publication, dict) or publication.get("status") not in {"eligible", "blocked"}:
+            return fail(f"tooling_lock.json cadence vendor {repository} publication.status must be eligible or blocked")
+        if publication["status"] == "blocked" and not isinstance(publication.get("reason"), str):
+            return fail(f"tooling_lock.json blocked Cadence vendor {repository} needs a reason")
+    ok("tooling_lock.json schema validated")
+    return 0
+
+
+def check_project_identity() -> int:
+    identity_path = REPO_ROOT / "project_identity.json"
+    try:
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        return fail(f"project_identity.json is not valid JSON: {exc}")
+    if not isinstance(identity, dict) or identity.get("schemaVersion") != "1.0.0":
+        return fail("project_identity.json must be a schemaVersion 1.0.0 object")
+    project_id = identity.get("projectId")
+    namespace = identity.get("namespace")
+    display_name = identity.get("displayName")
+    version = identity.get("version")
+    license_info = identity.get("license")
+    if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(project_id):
+        return fail("project_identity.json projectId must be lower-case hyphenated")
+    if not isinstance(namespace, str) or not NAMESPACE_RE.fullmatch(namespace) or namespace.startswith("org.example."):
+        return fail("project_identity.json namespace must be a non-example dotted namespace")
+    if not isinstance(display_name, str) or not 3 <= len(display_name.strip()) <= 120:
+        return fail("project_identity.json displayName is invalid")
+    if not isinstance(version, str) or not SEMVER_RE.fullmatch(version):
+        return fail("project_identity.json version must be semantic")
+    if not isinstance(license_info, dict):
+        return fail("project_identity.json license must be an object")
+    license_id = license_info.get("id")
+    copyright = license_info.get("copyright")
+    if license_id == "UNLICENSED" or not isinstance(license_id, str) or not LICENSE_ID_RE.fullmatch(license_id):
+        return fail("project_identity.json license.id must be a non-UNLICENSED SPDX-style identifier")
+    if not isinstance(copyright, str) or not 3 <= len(copyright.strip()) <= 200:
+        return fail("project_identity.json license.copyright is invalid")
+    license_path = REPO_ROOT / "LICENSE"
+    license_bytes = license_path.read_bytes()
+    if license_info.get("file") != "LICENSE" or license_info.get("sha256") != hashlib.sha256(license_bytes).hexdigest():
+        return fail("project_identity.json license file or SHA-256 does not match LICENSE")
+    license_text = license_bytes.decode("utf-8", errors="replace")
+    if f"SPDX-License-Identifier: {license_id}" not in license_text or f"Copyright (c) {copyright}" not in license_text:
+        return fail("LICENSE does not match project_identity.json")
+    try:
+        lock = json.loads((REPO_ROOT / "tooling_lock.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        return fail(f"tooling_lock.json is not valid JSON: {exc}")
+    lock_identity = lock.get("projectIdentity", {}) if isinstance(lock, dict) else {}
+    if lock_identity.get("pinValue") != hashlib.sha256(identity_path.read_bytes()).hexdigest():
+        return fail("tooling_lock.json projectIdentity pin does not match project_identity.json")
+    if (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() != version:
+        return fail("VERSION does not match project_identity.json")
+    try:
+        frontend = json.loads((REPO_ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
+        frontend_lock = json.loads((REPO_ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8"))
+        extensions = json.loads((REPO_ROOT / "local_extension_manifest.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        return fail(f"identity-bound JSON is invalid: {exc}")
+    if frontend.get("name") != f"{project_id}-frontend" or frontend.get("version") != version or frontend.get("license") != license_id:
+        return fail("frontend/package.json does not match project_identity.json")
+    lock_root = frontend_lock.get("packages", {}).get("") if isinstance(frontend_lock, dict) else None
+    if not isinstance(lock_root, dict) or lock_root.get("name") != f"{project_id}-frontend" or lock_root.get("version") != version or lock_root.get("license") != license_id:
+        return fail("frontend/package-lock.json does not match project_identity.json")
+    declared_extensions = extensions.get("extensions", []) if isinstance(extensions, dict) else []
+    if not isinstance(declared_extensions, list) or not declared_extensions:
+        return fail("local_extension_manifest.json must declare the project extension")
+    first_extension = declared_extensions[0]
+    if not isinstance(first_extension, dict) or first_extension.get("namespace") != namespace or first_extension.get("name") != f"{namespace}.hfvi-policy":
+        return fail("local_extension_manifest.json does not match project_identity.json")
+    for relative_path in ("README.md", "NOTICE", "CHANGELOG.md", "openspec/project.md", "frontend/package-lock.json", "frontend/index.html"):
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8", errors="replace")
+        if "{{" in text or "}}" in text or "UNLICENSED (template default)" in text:
+            return fail(f"unresolved generated identity residue in {relative_path}")
+    ok("generated project identity, version, and license are bound consistently")
+    return 0
+
+
+def check_extension_manifest_schema() -> int:
+    path = REPO_ROOT / "local_extension_manifest.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        return fail(f"local_extension_manifest.json is not valid JSON: {exc}")
+    if not isinstance(data, dict):
+        return fail("local_extension_manifest.json root must be an object")
+    missing = sorted(EXTENSION_MANIFEST_REQUIRED_KEYS - set(data))
+    if missing:
+        return fail(f"local_extension_manifest.json missing required keys: {missing}")
+    if not isinstance(data.get("extensions"), list):
+        return fail("local_extension_manifest.json extensions must be an array")
+    ok("local_extension_manifest.json schema validated")
+    return 0
+
+
+def run_hfvi_gate() -> int:
+    process = subprocess.run(["bash", "./scripts/verify-hfvi"], cwd=str(REPO_ROOT))
+    if process.returncode != 0:
+        return fail("HFVI gate failed")
+    return 0
+
+
+def maybe_run_cadence() -> int:
+    cadence_dir = REPO_ROOT / "vendor" / "cadence"
+    cadencew = REPO_ROOT / "cadencew"
+    if cadence_dir.exists():
+        receipt = cadence_dir / ".cadence-vendor-lock.json"
+        if not receipt.is_file():
+            return fail("vendor/cadence exists without .cadence-vendor-lock.json receipt")
+        if not cadencew.exists():
+            return fail("vendor/cadence exists without cadencew")
+        print("\n[CADENCE] vendor/cadence detected; running cadence verify --profile dev")
+        process = subprocess.run(["./cadencew", "verify", "--profile", "dev"], cwd=str(REPO_ROOT))
+        if process.returncode != 0:
+            return fail("Cadence verify failed")
+    return 0
+
+
+def main() -> int:
+    rc = 0
+    rc |= check_exists()
+    if rc != 0:
+        return rc
+    rc |= check_seed_contract()
+    rc |= check_deterministic_layout()
+    rc |= check_task_lock_schema()
+    rc |= check_tasks_index_contract()
+    rc |= check_stale_lock_semantics()
+    rc |= check_tooling_lock_schema()
+    rc |= check_project_identity()
+    rc |= check_extension_manifest_schema()
+    rc |= check_master_doc_minimum()
+    if rc == 0:
+        rc |= run_hfvi_gate()
+    if rc == 0:
+        rc |= maybe_run_cadence()
+    if rc == 0:
+        print("\nAll verify checks passed.")
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY

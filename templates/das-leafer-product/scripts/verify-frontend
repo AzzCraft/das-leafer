@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+./scripts/verify
+echo "[FAIL] frontend verify is intentionally fail-closed until repo-specific frontend evidence is present." >&2
+exit 1

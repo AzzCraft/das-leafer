@@ -1,0 +1,50 @@
+{
+  "$schema": "https://das-standard.dev/schemas/tooling_lock.schema.json",
+  "schemaVersion": "1.0.0",
+  "standardManifestVersion": "1.4.0",
+  "sourceOfTruth": {
+    "kind": "git",
+    "uri": ".",
+    "pinType": "commit",
+    "pinState": "template",
+    "floating": false
+  },
+  "verifyRuntime": {
+    "kind": "git",
+    "uri": "https://github.com/AzzCraft/cadence-oss.git",
+    "pinType": "commit",
+    "pinValue": "b127f613ac617c87972f86bebb0927fcc6e28b91",
+    "floating": false,
+    "notes": "Cadence OSS immutable tag target containing cadence-policy-packs/packs/core-v140-baseline; tag object 6b4bb284b1cfeb9e70714e0b3f26e6c1e4e0d452 is recorded separately for publication evidence."
+  },
+  "cadenceVendor": {
+    "schemaVersion": "1.0.0",
+    "repositories": {
+      "cadence-oss": {
+        "remote": "https://github.com/AzzCraft/cadence-oss.git",
+        "tag": "v1.1.0",
+        "tagObject": "6b4bb284b1cfeb9e70714e0b3f26e6c1e4e0d452",
+        "targetCommit": "b127f613ac617c87972f86bebb0927fcc6e28b91",
+        "tree": "9dabec57dfa742117ea61c7074ed27232f169958",
+        "publication": {
+          "status": "blocked",
+          "reason": "The recorded v1.1.0 tag is annotated but unsigned and has no completed release-validation, attestation, GitHub Release, or approved historical exception."
+        }
+      }
+    },
+    "trustedIdentitySigners": {}
+  },
+  "generatorTemplateVersion": "2026.04.08",
+  "policyPackVersion": "2026.04",
+  "toolchain": [
+    {
+      "name": "python3",
+      "version": "3.10+"
+    },
+    {
+      "name": "pyyaml",
+      "version": "6.x",
+      "manager": "pip"
+    }
+  ]
+}

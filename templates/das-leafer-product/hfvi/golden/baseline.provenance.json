@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "das-tools.golden-asset-provenance.v1",
+  "assetPath": "das-leafer/templates/das-leafer-product/hfvi/golden/baseline.png",
+  "sha256": "7ea3979d3afa04e619acb6060cc5e43587f2130edfbfbb1f4128b00e38810438",
+  "bytes": 6450,
+  "mediaType": "image/png",
+  "dimensions": {
+    "width": 1024,
+    "height": 768
+  },
+  "origin": "repository-generated",
+  "generatedBy": "das-leafer/templates/das-leafer-product/scripts/hfvi_replay.py --record-baseline",
+  "sourceInputs": [
+    {
+      "path": "das-leafer/templates/das-leafer-product/hfvi/tapes/baseline.json",
+      "sha256": "388c0c97cdbb5ed05dd2e16168e0d5816e599558e5145b7d5666d240caed5c55"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/hfvi/browser.lock.json",
+      "sha256": "a9503b3b4bcd3057b3983908c3235135d664092ee321bc5dc82ccfdb20265664"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/frontend/package-lock.json",
+      "sha256": "ae2bd930489339aec559aa31a9a7efc818ae6f0b00e2e8556cb00cd5c01c917b"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/frontend/package.json",
+      "sha256": "811bc0e60672df709759232e74c4c9d75f6b63983541f82cb3b86f42e0ae9124"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/frontend/index.html",
+      "sha256": "22fe0ee2c444febfc81b9d38bbfc6d8b994e9d5449c2b32a5bde515a69a3d3a3"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/frontend/src/main.ts",
+      "sha256": "0ab0309a1abf53d87b2fa5227e6d20b6f691f1a66afe542a29627597ca5999c6"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/frontend/src/style.css",
+      "sha256": "dce60f6edf75ec82a21eea3d65155df45c8f4921539b5586e7d1d9d2974070df"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/frontend/tsconfig.json",
+      "sha256": "64eaf6fb525f2dd8b467f3e3d621852c1b25c05a7908fbce434e32dcfb032425"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/frontend/vite.config.ts",
+      "sha256": "3e7cbae8d75f437a459a400b8fa3e0257411595473fbe3b5d0350af3c3bdb907"
+    },
+    {
+      "path": "das-leafer/templates/das-leafer-product/scripts/hfvi_replay.py",
+      "sha256": "d2ebaf84cb5e02179afcbb2c263858cc34f55df354fdb6d2e66210cb68127c92"
+    }
+  ],
+  "distribution": "Repository-generated deterministic test fixture distributed under the das-leafer Apache-2.0 license."
+}

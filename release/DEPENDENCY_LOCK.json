@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1.0.0",
+  "dependencies": {
+    "dasops": {
+      "candidateTreeSha256": "6c7db6ce5f3fe3c1443d55fe63ee60a8239e34cd1af76b926bc7cbcbe2dd69ef",
+      "component": "dasops",
+      "releaseIdentity": {
+        "remote": "https://github.com/AzzCraft/dasops.git",
+        "tag": "v1.0.0",
+        "tagObject": "08d64edf5d70abf07d3d5be249b5016fe74544b9",
+        "targetCommit": "01f54872349812598190ecf0b28e0dcad2927914",
+        "tree": "c78af9ad1381f7a11be2f6d64f36f49a59f09f3b"
+      },
+      "sourceDescriptor": "release/descriptors/dasops/v1.0.0.json",
+      "sourceDescriptorCommit": "7273247985e69bcf3765410bce9243d070c1dd2c",
+      "version": "1.0.0"
+    }
+  },
+  "publication": {
+    "status": "blocked",
+    "reason": "The pinned DASOps v1.0.0 tag is annotated but unsigned and has no recorded external publication evidence.",
+    "requirements": [
+      "A protected cryptographically signed DASOps tag",
+      "Recorded DASOps release-validation evidence and GitHub Release",
+      "An updated dependency lock with the approved signer and evidence identities"
+    ]
+  }
+}

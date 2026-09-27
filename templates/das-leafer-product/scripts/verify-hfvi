@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MASTER_DOC="$ROOT_DIR/docs/master_doc.md"
+VIS_SPEC="$ROOT_DIR/docs/appendices/APPENDIX_K_VIS.md"
+HFVI_PROFILE="hfvi_canvas_webgl_game"
+
+require_file() {
+  local path="$1"
+  if [[ ! -f "$path" ]]; then
+    echo "[FAIL] Missing required file: ${path#$ROOT_DIR/}"
+    exit 1
+  fi
+}
+
+require_nonempty_dir() {
+  local path="$1"
+  if [[ ! -d "$path" ]]; then
+    echo "[FAIL] Missing required directory: ${path#$ROOT_DIR/}"
+    exit 1
+  fi
+  if [[ -z "$(find "$path" -mindepth 1 -maxdepth 1 | head -n 1)" ]]; then
+    echo "[FAIL] Required directory is empty: ${path#$ROOT_DIR/}"
+    exit 1
+  fi
+}
+
+require_file "$MASTER_DOC"
+require_file "$VIS_SPEC"
+require_file "$ROOT_DIR/scripts/hfvi_replay.py"
+require_file "$ROOT_DIR/hfvi/browser.lock.json"
+require_file "$ROOT_DIR/hfvi/tapes/baseline.json"
+require_file "$ROOT_DIR/hfvi/golden/baseline.json"
+require_file "$ROOT_DIR/hfvi/golden/baseline.png"
+require_file "$ROOT_DIR/hfvi/golden/baseline.provenance.json"
+require_nonempty_dir "$ROOT_DIR/hfvi/tapes"
+require_nonempty_dir "$ROOT_DIR/hfvi/golden"
+
+if ! grep -Eq "interactionProfile\\s*[:=]\\s*${HFVI_PROFILE}" "$MASTER_DOC"; then
+  echo "[FAIL] docs/master_doc.md must declare interactionProfile: ${HFVI_PROFILE}"
+  exit 1
+fi
+
+for section in \
+  "## 8. HFVI asset declarations" \
+  "## 9. Layout conformance rules"
+do
+  if ! grep -Fq "$section" "$VIS_SPEC"; then
+    echo "[FAIL] Missing required VIS section: $section"
+    exit 1
+  fi
+done
+
+python3 "$ROOT_DIR/scripts/hfvi_replay.py"
+
+echo "[OK] HFVI profile declared"
+echo "[OK] VIS appendix contains required sections"
+echo "[OK] HFVI tapes and golden assets present"
+echo "[OK] locked-browser HFVI replay and pixel baseline match"

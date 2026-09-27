@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/contracts/hfvi-event.schema.json",
+  "title": "HFVI starter interaction event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventId", "kind", "targetId", "x", "y"],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["pointer.down", "pointer.move", "pointer.up"]
+    },
+    "targetId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$"
+    },
+    "x": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "y": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
